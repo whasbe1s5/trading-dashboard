@@ -45,6 +45,16 @@ def load_market_data():
     return df
 
 
+@st.cache_data(ttl=43200)
+def load_calendar():
+    path = os.path.join(DATA_DIR, "calendar.parquet")
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Mappings
 # ---------------------------------------------------------------------------
@@ -59,6 +69,9 @@ ASSET_COT_MAP = {
     "SPX": "S&P 500",
     "VIX": "VIX",
     "XAUUSD": "Gold",
+    "XAGUSD": "Silver",
+    "USOIL": "Crude Oil",
+    "COPPER": "Copper",
 }
 
 ASSET_TV_MAP = {
@@ -72,6 +85,9 @@ ASSET_TV_MAP = {
     "SPX": ("SPX", "TVC"),
     "VIX": ("VIX", "TVC"),
     "XAUUSD": ("XAUUSD", "FX_IDC"),
+    "XAGUSD": ("XAGUSD", "FX_IDC"),
+    "USOIL": ("USOIL", "TVC"),
+    "COPPER": ("COPPER", "TVC"),
 }
 
 COT_METRICS = {
@@ -283,7 +299,8 @@ st.sidebar.caption(signal["details"])
 # ---------------------------------------------------------------------------
 def build_chart(selected_asset, cot_df, tv_df, lookback_days,
                 metric_col="Range_Score",
-                show_spread=True, show_vix=False):
+                show_spread=True, show_vix=False,
+                cal_df=None):
     cutoff = datetime.now() - timedelta(days=lookback_days)
 
     price_data = pd.DataFrame()
@@ -390,6 +407,32 @@ def build_chart(selected_asset, cot_df, tv_df, lookback_days,
         fig.update_yaxes(range=[-5, 105], row=2, col=1,
                          title_text=f"COT {metric_key}")
 
+    # --- Economic Event Markers (top pane) ---
+    if cal_df is not None and not cal_df.empty:
+        event_lines = cal_df[
+            (cal_df["date"] >= cutoff) &
+            (cal_df["date"] <= datetime.now() + timedelta(days=30))
+        ]
+        for _, row in event_lines.iterrows():
+            fig.add_vline(
+                x=row["date"],
+                line_dash="dash",
+                line_color="white",
+                line_width=0.8,
+                opacity=0.4,
+                row=1, col=1,
+            )
+            fig.add_annotation(
+                x=row["date"],
+                y=1.02,
+                yref="paper",
+                xref="x",
+                text=row["event"],
+                showarrow=False,
+                font=dict(size=8, color="white"),
+                opacity=0.6,
+            )
+
     # --- Layout ---
     fig.update_layout(
         title=f"{selected_asset} — Macro-Technical Dashboard",
@@ -411,18 +454,27 @@ def build_chart(selected_asset, cot_df, tv_df, lookback_days,
 # ---------------------------------------------------------------------------
 # Render
 # ---------------------------------------------------------------------------
+cal_df = load_calendar()
 fig = build_chart(
     selected, cot_df, tv_df, lookback_days,
     metric_col=metric_col,
     show_spread=show_spread, show_vix=show_vix,
+    cal_df=cal_df,
 )
 st.plotly_chart(fig, width="stretch")
 
-cot_max_date = cot_df["Date"].max() if not cot_df.empty else "unknown"
-tv_max_date = tv_df["date"].max() if not tv_df.empty else "unknown"
+# Show COT as-of date for the selected asset
+cot_name = ASSET_COT_MAP.get(selected, selected)
+cot_selected = cot_df[cot_df["Asset"] == cot_name]
+cot_as_of = cot_selected["Date"].max() if not cot_selected.empty else None
+cot_lag_str = ""
+if cot_as_of:
+    published = cot_as_of + timedelta(days=3)
+    cot_lag_str = f"COT for {selected}: as-of {cot_as_of.date()} (published {published.date()})"
+
+tv_max_date = tv_df["date"].max() if not tv_df.empty else None
 st.caption(
-    f"COT latest: {cot_max_date} | "
-    f"Market latest: {tv_max_date} | "
-    f"COT data lags ~3 days (released Fri for prior Tue close) | "
+    f"{cot_lag_str} | "
+    f"{'Market: ' + str(tv_max_date.date()) if tv_max_date is not None else ''} | "
     f"Data: {DATA_DIR}"
 )

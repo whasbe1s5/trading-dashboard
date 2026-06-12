@@ -5,7 +5,7 @@ and saves as compressed Parquet files.
 """
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 from cot_reports import cot_reports
@@ -56,6 +56,9 @@ COT_SOURCES = [
         "date_col": "Report_Date_as_YYYY-MM-DD",
         "contracts": {
             "Gold": "088691",
+            "Silver": "084691",
+            "Copper": "085692",
+            "Crude Oil": "067651",
         },
     },
 ]
@@ -172,6 +175,9 @@ def fetch_tv_data():
         ("GBPUSD", "FX_IDC", Interval.in_daily, "GBPUSD"),
         ("USDJPY", "FX_IDC", Interval.in_daily, "USDJPY"),
         ("XAUUSD", "FX_IDC", Interval.in_daily, "XAUUSD"),
+        ("XAGUSD", "FX_IDC", Interval.in_daily, "XAGUSD"),
+        ("USOIL", "TVC", Interval.in_daily, "USOIL"),
+        ("COPPER", "TVC", Interval.in_daily, "COPPER"),
     ]
 
     frames = []
@@ -224,12 +230,65 @@ def compute_spreads(tv_df):
     return result
 
 
+def _nth_weekday(year, month, weekday, n):
+    """Return date of the nth weekday of a month (e.g., 1st Friday of month)."""
+    from calendar import monthcalendar
+    weeks = monthcalendar(year, month)
+    day_weeks = [w[weekday] for w in weeks if w[weekday] != 0]
+    return datetime(year, month, day_weeks[n - 1]) if n <= len(day_weeks) else None
+
+
+# Known FOMC schedule — updated annually. Meetings are 8 per year.
+_FOMC_DATES_2025 = [
+    "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18",
+    "2025-07-30", "2025-09-17", "2025-11-07", "2025-12-17",
+]
+_FOMC_DATES_2026 = [
+    "2026-01-28", "2026-03-18", "2026-05-06", "2026-06-17",
+    "2026-07-29", "2026-09-16", "2026-11-04", "2026-12-16",
+]
+
+
+def generate_calendar():
+    """Generate upcoming high-impact economic events.
+
+    Uses the known FOMC schedule, generates NFP (first Friday),
+    and CPI (~13th of month) dates for the current year.
+    Falls back entirely to pattern generation — no scraping.
+    """
+    now = datetime.now()
+    year = now.year
+    events = []
+
+    fomc_dates = _FOMC_DATES_2026 if year == 2026 else _FOMC_DATES_2025
+
+    for ds in fomc_dates:
+        dt = datetime.strptime(ds, "%Y-%m-%d")
+        if dt >= now - timedelta(days=7):
+            events.append({"date": dt, "event": "FOMC Meeting", "impact": "high"})
+
+    for m in range(1, 13):
+        dt = _nth_weekday(year, m, 4, 1)  # Friday = 4
+        if dt and dt >= now - timedelta(days=7):
+            events.append({"date": dt, "event": "NFP / Employment", "impact": "high"})
+
+        cpi_dt = datetime(year, m, 13)
+        if cpi_dt >= now - timedelta(days=7):
+            events.append({"date": cpi_dt, "event": "CPI", "impact": "high"})
+
+    df = pd.DataFrame(events)
+    if not df.empty:
+        df = df.sort_values("date").drop_duplicates(subset=["date", "event"]).reset_index(drop=True)
+    return df
+
+
 def save_all():
     """Fetch, compute, and save all data as Parquet files."""
     cutoff_ts = datetime.now().timestamp() - CACHE_FRESHNESS_SECONDS
 
     cot_file = os.path.join(DATA_DIR, "cot_metrics.parquet")
     tv_file = os.path.join(DATA_DIR, "market_data.parquet")
+    cal_file = os.path.join(DATA_DIR, "calendar.parquet")
 
     if os.path.exists(cot_file) and os.path.getmtime(cot_file) > cutoff_ts:
         log.info("SKIP  %s is < 12h old", cot_file)
@@ -259,6 +318,10 @@ def save_all():
         else:
             pd.DataFrame().to_parquet(tv_file, index=False)
             log.warning("SAVE  Empty market data -> %s", tv_file)
+
+    cal_df = generate_calendar()
+    cal_df.to_parquet(cal_file, index=False)
+    log.info("SAVE  Economic calendar -> %s (%d events)", cal_file, len(cal_df))
 
     log.info("Pipeline complete.")
 

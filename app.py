@@ -197,27 +197,25 @@ st.sidebar.markdown("Swing trading signals from COT + macro data")
 cot_df = load_cot_data()
 tv_df = load_market_data()
 
-# First-launch: no parquet files exist yet
+# First-launch: no parquet files exist yet — run the pipeline automatically
 if cot_df.empty and tv_df.empty:
-    st.sidebar.warning("No data found")
-    st.markdown("""
-    ## Macro-Technical Swing Trading Dashboard
-
-    **No data files found.** Run the pipeline first:
-
-    ```bash
-    source .venv/bin/activate
-    python data_pipeline.py
-    ```
-
-    This fetches:
-    - CFTC Commitments of Traders (COT) reports — 16 financial + 1 commodity contract
-    - TradingView data — yields, VIX, SPX, FX, gold (daily bars)
-
-    Then reload this page or deploy to [Streamlit Cloud](https://share.streamlit.io)
-    where `requirements.txt` auto-installs all dependencies.
-    """)
-    st.stop()
+    st.sidebar.warning("No local data — fetching from sources...")
+    status = st.info(
+        "⏳ **First launch detected.**\n\n"
+        "Downloading COT reports and market data from CFTC and TradingView. "
+        "This takes ~2 minutes. The page will reload automatically when done."
+    )
+    try:
+        from data_pipeline import save_all
+        save_all()
+        st.cache_data.clear()
+        status.empty()
+        st.rerun()
+    except Exception as e:
+        status.empty()
+        st.error(f"Pipeline failed: {e}")
+        st.info("Run `python data_pipeline.py` locally, then push the generated "
+                "`data/*.parquet` files to the repo.")
 
 if not cot_df.empty:
     age = (datetime.now() - cot_df["Date"].max()).days
